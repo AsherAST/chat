@@ -2,7 +2,7 @@
 
 Chat con salas, historial, presencia de usuarios e indicador "escribiendo…". Construido con Next.js, Socket.io, Prisma y PostgreSQL.
 
-> En desarrollo: el login, la creación de salas y el envío de mensajes en tiempo real se agregan en las próximas iteraciones.
+> En desarrollo: la creación de salas y el envío de mensajes en tiempo real se agregan en las próximas iteraciones. El registro/login/logout con sesiones JWT ya está implementado.
 
 ## Stack
 
