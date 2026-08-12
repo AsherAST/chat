@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+.env*
+npm-debug.log
+test-results
+playwright-report
+src/generated/prisma
