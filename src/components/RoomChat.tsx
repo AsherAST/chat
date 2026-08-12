@@ -11,6 +11,8 @@ type Message = {
   user: { id: string; name: string };
 };
 
+type PresentUser = { id: string; name: string };
+
 export default function RoomChat({
   roomId,
   currentUserId,
@@ -24,7 +26,11 @@ export default function RoomChat({
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [present, setPresent] = useState<PresentUser[]>([]);
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTypingSent = useRef(0);
 
   useEffect(() => {
     const socket = io({ withCredentials: true });
@@ -36,19 +42,62 @@ export default function RoomChat({
       setMessages((prev) => [...prev, message]);
     });
 
+    socket.on("presence:update", (users: PresentUser[]) => {
+      setPresent(users);
+    });
+
+    socket.on("typing:start", (data: { userId: string; name: string }) => {
+      setTypingUsers((prev) => ({ ...prev, [data.userId]: data.name }));
+    });
+
+    socket.on("typing:stop", (data: { userId: string }) => {
+      setTypingUsers((prev) => {
+        const next = { ...prev };
+        delete next[data.userId];
+        return next;
+      });
+    });
+
     socket.on("connect_error", () => {
       setError("No se pudo conectar. Inicia sesión de nuevo.");
     });
 
     return () => {
+      socket.emit("typing:stop", roomId);
       socket.emit("room:leave", roomId);
       socket.disconnect();
+      if (typingTimer.current) clearTimeout(typingTimer.current);
     };
   }, [roomId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [messages.length]);
+
+  function signalTyping() {
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) return;
+    const now = Date.now();
+    if (now - lastTypingSent.current > 1500) {
+      lastTypingSent.current = now;
+      socket.emit("typing:start", roomId);
+    }
+    if (typingTimer.current) clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => {
+      socket.emit("typing:stop", roomId);
+    }, 3000);
+  }
+
+  function stopTyping() {
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) return;
+    lastTypingSent.current = 0;
+    if (typingTimer.current) {
+      clearTimeout(typingTimer.current);
+      typingTimer.current = null;
+    }
+    socket.emit("typing:stop", roomId);
+  }
 
   function handleSend(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -67,6 +116,7 @@ export default function RoomChat({
       (res: { ok: boolean; error?: string }) => {
         if (res?.ok) {
           setDraft("");
+          stopTyping();
           setError(null);
         } else {
           setError(res?.error ?? "No se pudo enviar el mensaje.");
@@ -75,8 +125,38 @@ export default function RoomChat({
     );
   }
 
+  const typingNames = Object.values(typingUsers);
+  const typingLabel = typingNames.join(", ");
+
   return (
     <div className="flex h-[calc(100dvh-9rem)] flex-col rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+        <div className="flex items-center gap-1.5">
+          {present.map((user) => (
+            <span
+              key={user.id}
+              title={user.name}
+              className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-[10px] font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+            >
+              {user.name.charAt(0).toUpperCase()}
+            </span>
+          ))}
+          <span className="text-xs text-zinc-500">
+            {present.length === 0
+              ? "Sin usuarios en línea"
+              : present.length === 1
+                ? "1 en línea"
+                : `${present.length} en línea`}
+          </span>
+        </div>
+        {typingNames.length > 0 && (
+          <p className="text-xs italic text-zinc-400">
+            {typingLabel}{" "}
+            {typingNames.length === 1 ? "está" : "están"} escribiendo…
+          </p>
+        )}
+      </div>
+
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
           <p className="text-center text-sm text-zinc-400">
@@ -133,6 +213,8 @@ export default function RoomChat({
           onChange={(e) => {
             setDraft(e.target.value);
             setError(null);
+            if (e.target.value.trim()) signalTyping();
+            else stopTyping();
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

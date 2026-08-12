@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RoomChat from "@/components/RoomChat";
 
@@ -59,6 +59,35 @@ function emitNewMessage() {
   });
 }
 
+function emitPresence(users: Array<{ id: string; name: string }>) {
+  const call = socketOn.mock.calls.find(
+    ([event]) => event === "presence:update",
+  );
+  expect(call).toBeTruthy();
+  const [, handler] = call as [
+    string,
+    (users: Array<{ id: string; name: string }>) => void,
+  ];
+  act(() => handler(users));
+}
+
+function emitTypingStart() {
+  const call = socketOn.mock.calls.find(([event]) => event === "typing:start");
+  expect(call).toBeTruthy();
+  const [, handler] = call as [
+    string,
+    (data: { userId: string; name: string }) => void,
+  ];
+  act(() => handler({ userId: "u-other", name: "Ana" }));
+}
+
+function emitTypingStop() {
+  const call = socketOn.mock.calls.find(([event]) => event === "typing:stop");
+  expect(call).toBeTruthy();
+  const [, handler] = call as [string, (data: { userId: string }) => void];
+  act(() => handler({ userId: "u-other" }));
+}
+
 describe("RoomChat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,6 +99,10 @@ describe("RoomChat", () => {
     expect(ioMock).toHaveBeenCalledWith({ withCredentials: true });
     expect(socketOn).toHaveBeenCalledWith(
       "message:new",
+      expect.any(Function),
+    );
+    expect(socketOn).toHaveBeenCalledWith(
+      "presence:update",
       expect.any(Function),
     );
     expect(socketEmit).toHaveBeenCalledWith("room:join", "r1");
@@ -103,6 +136,56 @@ describe("RoomChat", () => {
       );
     });
     expect(input).toHaveValue("");
+  });
+
+  it("muestra la lista de usuarios en línea y el conteo", () => {
+    renderChat();
+    emitPresence([
+      { id: "u-me", name: "Yo" },
+      { id: "u-other", name: "Ana" },
+    ]);
+    expect(screen.getByText("2 en línea")).toBeInTheDocument();
+    expect(screen.getByText("Y")).toBeInTheDocument();
+    expect(screen.getByText("A")).toBeInTheDocument();
+  });
+
+  it("muestra y oculta el indicador de escritura", () => {
+    renderChat();
+    emitTypingStart();
+    expect(
+      screen.getByText((content) => content.includes("escribiendo")),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ana")).toBeInTheDocument();
+    emitTypingStop();
+    expect(
+      screen.queryByText((content) => content.includes("escribiendo")),
+    ).not.toBeInTheDocument();
+  });
+
+  it("emite typing:start al escribir y typing:stop al enviar", async () => {
+    socketEmit.mockImplementation(
+      (_event: string, _data: unknown, ack?: (r: { ok: boolean }) => void) => {
+        ack?.({ ok: true });
+      },
+    );
+    renderChat();
+
+    const input = screen.getByLabelText("Mensaje");
+    await userEvent.type(input, "Hol");
+
+    expect(socketEmit).toHaveBeenCalledWith("typing:start", "r1");
+
+    await userEvent.type(input, "a a todos");
+    await userEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(socketEmit).toHaveBeenCalledWith("typing:stop", "r1");
+    expect(input).toHaveValue("");
+  });
+
+  it("emite typing:stop al desmontar", () => {
+    const { unmount } = renderChat();
+    unmount();
+    expect(socketEmit).toHaveBeenCalledWith("typing:stop", "r1");
   });
 
   it("desconecta el socket al desmontar", () => {

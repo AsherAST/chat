@@ -32,6 +32,53 @@ app.prepare().then(() => {
 
   io.attach(server);
 
+  type PresentUser = { id: string; name: string };
+  const roomPresence = new Map<
+    string,
+    Map<string, { name: string; sockets: Set<string> }>
+  >();
+
+  function getPresence(roomId: string): PresentUser[] {
+    const users = roomPresence.get(`room:${roomId}`);
+    if (!users) return [];
+    return [...users.entries()].map(([id, { name }]) => ({ id, name }));
+  }
+
+  function addToPresence(
+    roomId: string,
+    socketId: string,
+    user: { id: string; name: string },
+  ) {
+    const key = `room:${roomId}`;
+    let users = roomPresence.get(key);
+    if (!users) {
+      users = new Map();
+      roomPresence.set(key, users);
+    }
+    let entry = users.get(user.id);
+    if (!entry) {
+      entry = { name: user.name, sockets: new Set() };
+      users.set(user.id, entry);
+    }
+    entry.sockets.add(socketId);
+  }
+
+  function removeFromPresence(
+    roomId: string,
+    socketId: string,
+    userId: string,
+  ) {
+    const users = roomPresence.get(`room:${roomId}`);
+    if (!users) return;
+    const entry = users.get(userId);
+    if (!entry) return;
+    entry.sockets.delete(socketId);
+    if (entry.sockets.size === 0) {
+      users.delete(userId);
+      if (users.size === 0) roomPresence.delete(`room:${roomId}`);
+    }
+  }
+
   io.use(async (socket, next) => {
     const token = getCookie(
       socket.handshake.headers.cookie,
@@ -54,15 +101,44 @@ app.prepare().then(() => {
 
   io.on("connection", (socket) => {
     const user = socket.data.user as { id: string; name: string };
+    const joinedRooms = new Set<string>();
+    socket.data.joinedRooms = joinedRooms;
     console.log(`[socket] ${user.name} conectado: ${socket.id}`);
 
     socket.on("room:join", (roomId: string) => {
+      if (typeof roomId !== "string" || !roomId) return;
       socket.join(`room:${roomId}`);
+      joinedRooms.add(roomId);
+      const wasEmpty = getPresence(roomId).length === 0;
+      addToPresence(roomId, socket.id, user);
+      const presence = getPresence(roomId);
+      if (wasEmpty) {
+        socket.emit("presence:update", presence);
+      } else {
+        io.to(`room:${roomId}`).emit("presence:update", presence);
+      }
       console.log(`[socket] ${user.name} entró a sala ${roomId}`);
     });
 
     socket.on("room:leave", (roomId: string) => {
+      if (typeof roomId !== "string" || !roomId) return;
       socket.leave(`room:${roomId}`);
+      joinedRooms.delete(roomId);
+      removeFromPresence(roomId, socket.id, user.id);
+      io.to(`room:${roomId}`).emit("presence:update", getPresence(roomId));
+    });
+
+    socket.on("typing:start", (roomId: string) => {
+      if (typeof roomId !== "string" || !roomId) return;
+      socket.to(`room:${roomId}`).emit("typing:start", {
+        userId: user.id,
+        name: user.name,
+      });
+    });
+
+    socket.on("typing:stop", (roomId: string) => {
+      if (typeof roomId !== "string" || !roomId) return;
+      socket.to(`room:${roomId}`).emit("typing:stop", { userId: user.id });
     });
 
     socket.on("message:send", async (data, ack) => {
@@ -107,6 +183,11 @@ app.prepare().then(() => {
     });
 
     socket.on("disconnect", () => {
+      const rooms = (socket.data.joinedRooms as Set<string>) ?? new Set();
+      for (const roomId of rooms) {
+        removeFromPresence(roomId, socket.id, user.id);
+        io.to(`room:${roomId}`).emit("presence:update", getPresence(roomId));
+      }
       console.log(`[socket] ${user.name} desconectado: ${socket.id}`);
     });
   });
